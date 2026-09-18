@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "extracted-motion-primitives"
+version = "0.1.0"
+description = "SOC-independent motion collections and primitive extraction"
+requires-python = ">=3.10"
+dependencies = ["numpy", "scipy", "pandas", "tqdm", "matplotlib", "reachgrasp"]
+
+[project.optional-dependencies]
+fada = ["torch"]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["motion_primitives*", "riemannian*"]

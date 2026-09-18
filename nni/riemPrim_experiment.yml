@@ -1,0 +1,23 @@
+experimentName: RIEMPRIM_SUB01_FIRSTREP_ALL_ACTIONS
+
+searchSpaceFile: riemPrim_search_space.json
+
+trialCommand: >-
+  python nni/riemPrim_nni_trial.py
+  --subjects sub-01
+  --tasks Cyl EatFruit FroRea HC HO Pour ReaCyl ReaSph Screw Sph Thumb Trid WE WF WP WS
+  --dataset-path "$REACHGRASP_DATASET"
+  --max-repetitions 1
+
+trialCodeDirectory: ..
+
+trialConcurrency: 4
+maxTrialNumber: 150
+
+tuner:
+  name: Evolution
+  classArgs:
+    optimize_mode: minimize
+
+trainingService:
+  platform: local
