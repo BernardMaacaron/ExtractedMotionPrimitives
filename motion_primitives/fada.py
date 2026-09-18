@@ -16,32 +16,6 @@ def variance_captured(actual, fitted):
                  np.sum((actual - actual.mean(axis=(0, 1), keepdims=True)) ** 2))
 
 
-def split_repetitions(metadata, seed=None):
-    """Split whole repetitions within actions; keep every row of a repetition together."""
-    identity = ['dataset', 'subject', 'action', 'repetition']
-    keys = metadata[identity].drop_duplicates().copy()
-    if seed is None:
-        position = keys.groupby(['dataset', 'action']).cumcount()
-        short = keys.groupby(['dataset', 'action']).action.transform('size') < 5
-        keys['split'] = np.select(
-            ((short & position.eq(0)) | (~short & position.mod(5).lt(3)),
-             (short & position.eq(1)) | (~short & position.mod(5).eq(3))),
-            ('discovery', 'validation'), default='test')
-        return metadata.merge(keys, on=identity, validate='many_to_one')['split']
-    rng = np.random.default_rng(seed)
-    keys['split'] = ''
-    for _, group in keys.groupby(['dataset', 'action'], sort=True):
-        indices = rng.permutation(group.index)
-        n = len(indices)
-        if n < 3:
-            raise ValueError('Each action needs at least three repetitions.')
-        n_validation = max(1, n // 5)
-        keys.loc[indices[:n_validation], 'split'] = 'validation'
-        keys.loc[indices[n_validation:2 * n_validation], 'split'] = 'test'
-        keys.loc[indices[2 * n_validation:], 'split'] = 'discovery'
-    return metadata.merge(keys, on=identity, validate='many_to_one')['split']
-
-
 def prepare_spectra(target, discovery, pad, energy=0.995, min_k=4, max_k=80):
     mean = target[discovery].mean(axis=(0, 1))
     padded = np.pad((target - mean).transpose(0, 2, 1), ((0, 0), (0, 0), (pad, pad)))
