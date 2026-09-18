@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Extracted Motion Primitives
 
 SOC-independent dataset loading, preprocessing, and primitive extraction live here.
@@ -184,3 +185,7 @@ selection and scaling are owned by gain/readout manifests. They now import the e
 Likewise, `7f_KinematicSCAControl` and `RiemannianAnalysis` remain in ARC-IIT because they include
 SOC comparisons or gain geometry. Their old results are not silently relabelled as this unscaled
 31-channel collection. New SOC-independent scientific work and results belong here.
+=======
+# ExtractedMotionPrimitives
+Personal repo to test, analyse, extract and store motion primitives of all types and generated from various datasets.
+>>>>>>> 58f3102acebe50653e6b6ddabdbdb2833db3bdba
