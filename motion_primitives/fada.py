@@ -177,8 +177,8 @@ class FADA:
         return torch.cat(coefficients_out), torch.cat(delays_out)
 
     def update_torch(self, target, library, coefficients, delays):
-        omega = torch.as_tensor(self.omega, device=self.device)
-        weights = torch.as_tensor(self.weights, device=self.device)
+        omega = torch.as_tensor(self.omega, device=self.device, dtype=target.real.dtype)
+        weights = torch.as_tensor(self.weights, device=self.device, dtype=target.real.dtype)
         activation = coefficients[..., None] * torch.exp(-1j * delays[..., None] * omega)
         if 'primitive_hat' in library:
             primitive = (torch.linalg.pinv(activation.permute(2, 0, 1)) @
@@ -280,10 +280,10 @@ class FADA:
                 if use_torch:
                     c, delays = self.project_torch(x, library, delays)
                     library = self.update_torch(x, library, c, delays)
-                    omega = torch.as_tensor(self.omega, device=self.device)
+                    omega = torch.as_tensor(self.omega, device=self.device, dtype=x.real.dtype)
                     activation = c[..., None] * torch.exp(-1j * delays[..., None] * omega)
                     fitted = torch.einsum('lpf,pmf->lmf', activation, pair_basis(library))
-                    weights = torch.as_tensor(self.weights, device=self.device)
+                    weights = torch.as_tensor(self.weights, device=self.device, dtype=x.real.dtype)
                     objective = float(((x - fitted).abs() ** 2 * weights ** 2).mean())
                 else:
                     c, delays = self.project_numpy(x, library, delays)
@@ -327,61 +327,3 @@ def align_primitives(reference, candidate, max_shift):
         signs[improved] = np.sign(correlation[improved])
     rows, columns = linear_sum_assignment(-scores)
     return rows, columns, scores[rows, columns], shifts[rows, columns], signs[rows, columns]
-
-
-def fit_fada_collection(values, split, *, model='spatiotemporal', n_components=4,
-                        n_spatial=None, pad=None, energy=0.995, max_delay=20,
-                        backend='torch', device='auto', batch_size=512,
-                        iterations=20, delay_steps=40, restarts=2, seed=42):
-    """Fit FADA on discovery trials and project the fixed library onto every trial."""
-    values = np.asarray(values, dtype=float)
-    split = np.asarray(split)
-    discovery = split == 'discovery'
-    if values.ndim != 3 or len(values) != len(split):
-        raise ValueError('Expected values (trial, phase, joint) and one split label per trial.')
-    if not discovery.any():
-        raise ValueError('No discovery trials.')
-
-    samples = values.shape[1]
-    if pad is None:
-        pad = samples // 2
-    spectra, mean, cumulative_energy = prepare_spectra(values, discovery, pad, energy=energy)
-    n_time = samples + 2 * pad
-    k = spectra.shape[-1] - 1
-
-    if backend == 'torch' and device == 'auto':
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
-    elif backend != 'torch':
-        device = 'cpu'
-
-    fitter = FADA(n_time=n_time, k=k, max_delay=max_delay, iterations=iterations,
-                  delay_steps=delay_steps, backend=backend, device=device,
-                  batch_size=batch_size)
-
-    if model == 'temporal':
-        train = spectra[discovery].reshape(-1, 1, k + 1)
-        result = fitter.fit(train, (n_components,), restarts=restarts, seed=seed)
-        coefficients, delays, fitted = fitter.project(
-            spectra.reshape(-1, 1, k + 1), result['library'])
-        fitted = fitted.reshape(spectra.shape)
-        coefficients = coefficients.reshape(len(values), values.shape[2], -1)
-        delays = delays.reshape(len(values), values.shape[2], -1)
-    elif model == 'spatiotemporal':
-        result = fitter.fit(spectra[discovery], (n_components,), restarts=restarts, seed=seed)
-        coefficients, delays, fitted = fitter.project(spectra, result['library'])
-    elif model == 'space_by_time':
-        n_spatial = values.shape[2] if n_spatial is None else n_spatial
-        result = fitter.fit(spectra[discovery], (n_components, n_spatial),
-                            restarts=restarts, seed=seed)
-        coefficients, delays, fitted = fitter.project(spectra, result['library'])
-    else:
-        raise ValueError('model must be temporal, spatiotemporal, or space_by_time')
-
-    reconstructed = np.fft.irfft(fitted, n=n_time, axis=-1)
-    reconstruction = reconstructed[..., pad:pad + samples].transpose(0, 2, 1)
-    reconstruction = reconstruction + mean[None, None, :]
-
-    return dict(model=model, library=result['library'], coefficients=coefficients,
-                delays=delays, reconstruction=reconstruction, mean=mean, fourier_k=k,
-                cumulative_energy=cumulative_energy, pad=pad, objective=result['objective'],
-                history=result['history'], device=fitter.device)
