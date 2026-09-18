@@ -1,3 +1,9 @@
+# Project related files
+
+collections/
+notebooks/results/
+riemannian_results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
