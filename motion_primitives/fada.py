@@ -86,6 +86,7 @@ class FADA:
     backend: str = 'scipy'
     device: str = 'cpu'
     delay_lr: float = 0.5  # Samples per Adam step; independent of padded signal length.
+    batch_size: int = 512
 
     def __post_init__(self):
         if not 0 <= self.k < (self.n_time + 1) // 2:
@@ -149,47 +150,57 @@ class FADA:
         return {'temporal_hat': temporal, 'spatial': spatial}
 
     def project_torch(self, target, library, delays):
-        omega = torch.as_tensor(self.omega, device=self.device)
-        weights = torch.as_tensor(self.weights, device=self.device)
+        """Project trials in bounded batches; each trial keeps independent coefficients/delays."""
+        omega = torch.as_tensor(self.omega, device=self.device, dtype=target.real.dtype)
+        weights = torch.as_tensor(self.weights, device=self.device, dtype=target.real.dtype)
         basis = pair_basis(library)
-        y = (target * weights).flatten(1).unsqueeze(-1)
-        real_y = torch.cat((y.real, y.imag), dim=1)
+        coefficients_out, delays_out = [], []
 
-        def design_at(tau):
-            shifted = basis[None] * torch.exp(-1j * tau[:, :, None, None] * omega)
-            design = (shifted * weights).flatten(2).transpose(1, 2)
-            return torch.cat((design.real, design.imag), dim=1)
+        for start in range(0, len(target), self.batch_size):
+            stop = min(start + self.batch_size, len(target))
+            batch = target[start:stop]
+            tau = delays[start:stop].detach().clone().requires_grad_(bool(self.max_delay))
+            y = (batch * weights).flatten(1).unsqueeze(-1)
+            real_y = torch.cat((y.real, y.imag), dim=1)
 
-        tau = delays.detach().clone().requires_grad_(bool(self.max_delay))
-        if self.max_delay:
-            optimizer = torch.optim.Adam([tau], lr=self.delay_lr)
-            best_loss = torch.full((len(target),), float('inf'), device=self.device)
-            best_tau = tau.detach().clone()
-            for _ in range(self.delay_steps):
-                optimizer.zero_grad()
-                design = design_at(tau)
-                # Rank-aware batched solves also cover redundant SBT pairings on CUDA.
+            def design_at(current_tau):
+                shifted = basis[None] * torch.exp(-1j * current_tau[:, :, None, None] * omega)
+                design = (shifted * weights).flatten(2).transpose(1, 2)
+                return torch.cat((design.real, design.imag), dim=1)
+
+            if self.max_delay:
+                optimizer = torch.optim.Adam([tau], lr=self.delay_lr)
+                best_loss = torch.full((len(batch),), float('inf'), device=self.device,
+                                       dtype=batch.real.dtype)
+                best_tau = tau.detach().clone()
+                for _ in range(self.delay_steps):
+                    optimizer.zero_grad()
+                    design = design_at(tau)
+                    with torch.no_grad():
+                        coeff = torch.linalg.pinv(design.detach()) @ real_y
+                    loss = ((design @ coeff - real_y) ** 2).mean(dim=(1, 2))
+                    improved = loss.detach() < best_loss
+                    best_loss = torch.minimum(best_loss, loss.detach())
+                    best_tau[improved] = tau.detach()[improved]
+                    loss.sum().backward()
+                    optimizer.step()
+                    with torch.no_grad():
+                        tau.clamp_(-self.max_delay, self.max_delay)
                 with torch.no_grad():
-                    c = torch.linalg.pinv(design.detach()) @ real_y
-                loss = ((design @ c - real_y) ** 2).mean(dim=(1, 2))
-                improved = loss.detach() < best_loss
-                best_loss = torch.minimum(best_loss, loss.detach())
-                best_tau[improved] = tau.detach()[improved]
-                loss.sum().backward()
-                optimizer.step()
-                with torch.no_grad():
-                    tau.clamp_(-self.max_delay, self.max_delay)
+                    design = design_at(tau)
+                    coeff = torch.linalg.pinv(design) @ real_y
+                    improved = ((design @ coeff - real_y) ** 2).mean(dim=(1, 2)) < best_loss
+                    best_tau[improved] = tau.detach()[improved]
+                tau = best_tau
+            else:
+                tau = torch.zeros_like(tau)
+
             with torch.no_grad():
-                design = design_at(tau)
-                c = torch.linalg.pinv(design) @ real_y
-                improved = ((design @ c - real_y) ** 2).mean(dim=(1, 2)) < best_loss
-                best_tau[improved] = tau.detach()[improved]
-            tau = best_tau
-        else:
-            tau = torch.zeros_like(tau)
-        with torch.no_grad():
-            c = torch.linalg.pinv(design_at(tau)) @ real_y
-        return c[..., 0], tau.detach()
+                coeff = torch.linalg.pinv(design_at(tau)) @ real_y
+            coefficients_out.append(coeff[..., 0])
+            delays_out.append(tau.detach())
+
+        return torch.cat(coefficients_out), torch.cat(delays_out)
 
     def update_torch(self, target, library, coefficients, delays):
         omega = torch.as_tensor(self.omega, device=self.device)
@@ -257,9 +268,10 @@ class FADA:
         if self.backend == 'scipy':
             c, tau = self.project_numpy(target, library, delays)
         else:
-            tensors = {key: torch.as_tensor(value, device=self.device) for key, value in library.items()}
-            c, tau = self.project_torch(torch.as_tensor(target, device=self.device), tensors,
-                                        torch.as_tensor(delays, device=self.device))
+            dtype = torch.complex64 if str(self.device).startswith('cuda') else None
+            tensors = {key: torch.as_tensor(value, device=self.device, dtype=dtype) for key, value in library.items()}
+            c, tau = self.project_torch(torch.as_tensor(target, device=self.device, dtype=dtype), tensors,
+                                        torch.as_tensor(delays, device=self.device, dtype=torch.float32 if dtype else None))
             c, tau = c.cpu().numpy(), tau.cpu().numpy()
         return c, tau, reconstruct(library, c, tau, self.omega)
 
@@ -271,7 +283,9 @@ class FADA:
             raise ValueError('SBT order exceeds temporal or spatial initialization rank.')
         best = None
         use_torch = self.backend == 'torch'
-        x = torch.as_tensor(target, device=self.device) if use_torch else target
+        x = (torch.as_tensor(target, device=self.device, dtype=torch.complex64)
+             if use_torch and str(self.device).startswith('cuda') else
+             torch.as_tensor(target, device=self.device) if use_torch else target)
         if initial is None:
             initial = self.initialize(target, order, np.random.default_rng(seed), warm=warm)
         base_library, base_delays = initial
