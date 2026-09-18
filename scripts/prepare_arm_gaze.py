@@ -170,7 +170,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset-path', type=Path, default=ARM_GAZE_ROOT)
     parser.add_argument('--output', type=Path,
-                        default=PROJECT_ROOT / 'collections/3D-ARM-Gaze/custom-phase200-v2')
+                        default=PROJECT_ROOT / 'collections/3D-ARM-Gaze/custom-phase200-v1')
     parser.add_argument('--samples', type=int, default=200)
     parser.add_argument('--arm', choices=('custom', 'virtual'), default='custom')
     parser.add_argument('--subjects', nargs='+', help='Optional explicit subject subset, e.g. s1 s2.')
