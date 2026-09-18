@@ -298,9 +298,9 @@ class FADA:
                            for key, value in library.items()}
                 delays = rng.uniform(-0.1 * self.max_delay, 0.1 * self.max_delay, delays.shape)
             if use_torch:
-                library = {key: torch.as_tensor(value, device=self.device)
+                library = {key: torch.as_tensor(value, device=self.device, dtype=x.dtype)
                            for key, value in library.items()}
-                delays = torch.as_tensor(delays.copy(), device=self.device)
+                delays = torch.as_tensor(delays.copy(), device=self.device, dtype=x.real.dtype)
             history = []
             for _ in range(self.iterations):
                 if use_torch:
