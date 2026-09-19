@@ -16,32 +16,6 @@ def variance_captured(actual, fitted):
                  np.sum((actual - actual.mean(axis=(0, 1), keepdims=True)) ** 2))
 
 
-def split_repetitions(metadata, seed=None):
-    """Split whole repetitions within actions; keep every row of a repetition together."""
-    identity = ['dataset', 'subject', 'action', 'repetition']
-    keys = metadata[identity].drop_duplicates().copy()
-    if seed is None:
-        position = keys.groupby(['dataset', 'action']).cumcount()
-        short = keys.groupby(['dataset', 'action']).action.transform('size') < 5
-        keys['split'] = np.select(
-            ((short & position.eq(0)) | (~short & position.mod(5).lt(3)),
-             (short & position.eq(1)) | (~short & position.mod(5).eq(3))),
-            ('discovery', 'validation'), default='test')
-        return metadata.merge(keys, on=identity, validate='many_to_one')['split']
-    rng = np.random.default_rng(seed)
-    keys['split'] = ''
-    for _, group in keys.groupby(['dataset', 'action'], sort=True):
-        indices = rng.permutation(group.index)
-        n = len(indices)
-        if n < 3:
-            raise ValueError('Each action needs at least three repetitions.')
-        n_validation = max(1, n // 5)
-        keys.loc[indices[:n_validation], 'split'] = 'validation'
-        keys.loc[indices[n_validation:2 * n_validation], 'split'] = 'test'
-        keys.loc[indices[2 * n_validation:], 'split'] = 'discovery'
-    return metadata.merge(keys, on=identity, validate='many_to_one')['split']
-
-
 def prepare_spectra(target, discovery, pad, energy=0.995, min_k=4, max_k=80):
     mean = target[discovery].mean(axis=(0, 1))
     padded = np.pad((target - mean).transpose(0, 2, 1), ((0, 0), (0, 0), (pad, pad)))
@@ -86,6 +60,7 @@ class FADA:
     backend: str = 'scipy'
     device: str = 'cpu'
     delay_lr: float = 0.5  # Samples per Adam step; independent of padded signal length.
+    batch_size: int = 512
 
     def __post_init__(self):
         if not 0 <= self.k < (self.n_time + 1) // 2:
@@ -149,51 +124,61 @@ class FADA:
         return {'temporal_hat': temporal, 'spatial': spatial}
 
     def project_torch(self, target, library, delays):
-        omega = torch.as_tensor(self.omega, device=self.device)
-        weights = torch.as_tensor(self.weights, device=self.device)
+        """Project trials in bounded batches; each trial keeps independent coefficients/delays."""
+        omega = torch.as_tensor(self.omega, device=self.device, dtype=target.real.dtype)
+        weights = torch.as_tensor(self.weights, device=self.device, dtype=target.real.dtype)
         basis = pair_basis(library)
-        y = (target * weights).flatten(1).unsqueeze(-1)
-        real_y = torch.cat((y.real, y.imag), dim=1)
+        coefficients_out, delays_out = [], []
 
-        def design_at(tau):
-            shifted = basis[None] * torch.exp(-1j * tau[:, :, None, None] * omega)
-            design = (shifted * weights).flatten(2).transpose(1, 2)
-            return torch.cat((design.real, design.imag), dim=1)
+        for start in range(0, len(target), self.batch_size):
+            stop = min(start + self.batch_size, len(target))
+            batch = target[start:stop]
+            tau = delays[start:stop].detach().clone().requires_grad_(bool(self.max_delay))
+            y = (batch * weights).flatten(1).unsqueeze(-1)
+            real_y = torch.cat((y.real, y.imag), dim=1)
 
-        tau = delays.detach().clone().requires_grad_(bool(self.max_delay))
-        if self.max_delay:
-            optimizer = torch.optim.Adam([tau], lr=self.delay_lr)
-            best_loss = torch.full((len(target),), float('inf'), device=self.device)
-            best_tau = tau.detach().clone()
-            for _ in range(self.delay_steps):
-                optimizer.zero_grad()
-                design = design_at(tau)
-                # Rank-aware batched solves also cover redundant SBT pairings on CUDA.
+            def design_at(current_tau):
+                shifted = basis[None] * torch.exp(-1j * current_tau[:, :, None, None] * omega)
+                design = (shifted * weights).flatten(2).transpose(1, 2)
+                return torch.cat((design.real, design.imag), dim=1)
+
+            if self.max_delay:
+                optimizer = torch.optim.Adam([tau], lr=self.delay_lr)
+                best_loss = torch.full((len(batch),), float('inf'), device=self.device,
+                                       dtype=batch.real.dtype)
+                best_tau = tau.detach().clone()
+                for _ in range(self.delay_steps):
+                    optimizer.zero_grad()
+                    design = design_at(tau)
+                    with torch.no_grad():
+                        coeff = torch.linalg.pinv(design.detach()) @ real_y
+                    loss = ((design @ coeff - real_y) ** 2).mean(dim=(1, 2))
+                    improved = loss.detach() < best_loss
+                    best_loss = torch.minimum(best_loss, loss.detach())
+                    best_tau[improved] = tau.detach()[improved]
+                    loss.sum().backward()
+                    optimizer.step()
+                    with torch.no_grad():
+                        tau.clamp_(-self.max_delay, self.max_delay)
                 with torch.no_grad():
-                    c = torch.linalg.pinv(design.detach()) @ real_y
-                loss = ((design @ c - real_y) ** 2).mean(dim=(1, 2))
-                improved = loss.detach() < best_loss
-                best_loss = torch.minimum(best_loss, loss.detach())
-                best_tau[improved] = tau.detach()[improved]
-                loss.sum().backward()
-                optimizer.step()
-                with torch.no_grad():
-                    tau.clamp_(-self.max_delay, self.max_delay)
+                    design = design_at(tau)
+                    coeff = torch.linalg.pinv(design) @ real_y
+                    improved = ((design @ coeff - real_y) ** 2).mean(dim=(1, 2)) < best_loss
+                    best_tau[improved] = tau.detach()[improved]
+                tau = best_tau
+            else:
+                tau = torch.zeros_like(tau)
+
             with torch.no_grad():
-                design = design_at(tau)
-                c = torch.linalg.pinv(design) @ real_y
-                improved = ((design @ c - real_y) ** 2).mean(dim=(1, 2)) < best_loss
-                best_tau[improved] = tau.detach()[improved]
-            tau = best_tau
-        else:
-            tau = torch.zeros_like(tau)
-        with torch.no_grad():
-            c = torch.linalg.pinv(design_at(tau)) @ real_y
-        return c[..., 0], tau.detach()
+                coeff = torch.linalg.pinv(design_at(tau)) @ real_y
+            coefficients_out.append(coeff[..., 0])
+            delays_out.append(tau.detach())
+
+        return torch.cat(coefficients_out), torch.cat(delays_out)
 
     def update_torch(self, target, library, coefficients, delays):
-        omega = torch.as_tensor(self.omega, device=self.device)
-        weights = torch.as_tensor(self.weights, device=self.device)
+        omega = torch.as_tensor(self.omega, device=self.device, dtype=target.real.dtype)
+        weights = torch.as_tensor(self.weights, device=self.device, dtype=target.real.dtype)
         activation = coefficients[..., None] * torch.exp(-1j * delays[..., None] * omega)
         if 'primitive_hat' in library:
             primitive = (torch.linalg.pinv(activation.permute(2, 0, 1)) @
@@ -257,9 +242,10 @@ class FADA:
         if self.backend == 'scipy':
             c, tau = self.project_numpy(target, library, delays)
         else:
-            tensors = {key: torch.as_tensor(value, device=self.device) for key, value in library.items()}
-            c, tau = self.project_torch(torch.as_tensor(target, device=self.device), tensors,
-                                        torch.as_tensor(delays, device=self.device))
+            dtype = torch.complex64 if str(self.device).startswith('cuda') else None
+            tensors = {key: torch.as_tensor(value, device=self.device, dtype=dtype) for key, value in library.items()}
+            c, tau = self.project_torch(torch.as_tensor(target, device=self.device, dtype=dtype), tensors,
+                                        torch.as_tensor(delays, device=self.device, dtype=torch.float32 if dtype else None))
             c, tau = c.cpu().numpy(), tau.cpu().numpy()
         return c, tau, reconstruct(library, c, tau, self.omega)
 
@@ -271,7 +257,9 @@ class FADA:
             raise ValueError('SBT order exceeds temporal or spatial initialization rank.')
         best = None
         use_torch = self.backend == 'torch'
-        x = torch.as_tensor(target, device=self.device) if use_torch else target
+        x = (torch.as_tensor(target, device=self.device, dtype=torch.complex64)
+             if use_torch and str(self.device).startswith('cuda') else
+             torch.as_tensor(target, device=self.device) if use_torch else target)
         if initial is None:
             initial = self.initialize(target, order, np.random.default_rng(seed), warm=warm)
         base_library, base_delays = initial
@@ -284,18 +272,18 @@ class FADA:
                            for key, value in library.items()}
                 delays = rng.uniform(-0.1 * self.max_delay, 0.1 * self.max_delay, delays.shape)
             if use_torch:
-                library = {key: torch.as_tensor(value, device=self.device)
+                library = {key: torch.as_tensor(value, device=self.device, dtype=x.dtype)
                            for key, value in library.items()}
-                delays = torch.as_tensor(delays.copy(), device=self.device)
+                delays = torch.as_tensor(delays.copy(), device=self.device, dtype=x.real.dtype)
             history = []
             for _ in range(self.iterations):
                 if use_torch:
                     c, delays = self.project_torch(x, library, delays)
                     library = self.update_torch(x, library, c, delays)
-                    omega = torch.as_tensor(self.omega, device=self.device)
+                    omega = torch.as_tensor(self.omega, device=self.device, dtype=x.real.dtype)
                     activation = c[..., None] * torch.exp(-1j * delays[..., None] * omega)
                     fitted = torch.einsum('lpf,pmf->lmf', activation, pair_basis(library))
-                    weights = torch.as_tensor(self.weights, device=self.device)
+                    weights = torch.as_tensor(self.weights, device=self.device, dtype=x.real.dtype)
                     objective = float(((x - fitted).abs() ** 2 * weights ** 2).mean())
                 else:
                     c, delays = self.project_numpy(x, library, delays)

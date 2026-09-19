@@ -46,8 +46,9 @@ def prepare(dataset_path, output, samples=200, exclude=()):
             native_q.append(q)
             native_time.append(time)
             offsets.append(offsets[-1] + len(time))
-            rows.append(dict(movement_id=f'ReachGrasp/{subject}/{task}/rep-{repetition:02d}',
-                             dataset='ReachGrasp', subject=subject, action=task, repetition=repetition,
+            trial_id = f'ReachGrasp/{subject}/{task}/rep-{repetition:02d}'
+            rows.append(dict(trial_id=trial_id, movement_id=trial_id,
+                             dataset='ReachGrasp', subject=subject, action=task, condition='recorded', repetition=repetition,
                              duration_seconds=float(time[-1] - time[0]), native_samples=len(time),
                              source_file=str(Path(f'{stem}_motion.csv').relative_to(dataset_path)),
                              source_start_index=cuts[2 * repetition + 1],
@@ -58,23 +59,23 @@ def prepare(dataset_path, output, samples=200, exclude=()):
     metadata = pd.DataFrame(rows)
     q = np.stack(phase_q)
     h, f = endpoint_decomposition(q)
-    ids = metadata.movement_id.to_numpy(dtype=str)
+    ids = metadata.trial_id.to_numpy(dtype=str)
     np.savez_compressed(output / 'native.npz', q=np.concatenate(native_q), time=np.concatenate(native_time),
-                        offsets=np.array(offsets), movement_ids=ids, joint_names=np.array(joint_names))
-    np.savez_compressed(output / 'phase.npz', q=q, h=h, f=f, q_start=q[:, 0], q_goal=q[:, -1],
-                        phase=np.linspace(0, 1, samples), movement_ids=ids, joint_names=np.array(joint_names))
+                        offsets=np.array(offsets), trial_ids=ids, movement_ids=ids, joint_names=np.array(joint_names))
+    np.savez_compressed(output / 'phase.npz', q=q, h=h, f=f, q_start=q[:, 0], q_end=q[:, -1],
+                        phase=np.linspace(0, 1, samples), trial_ids=ids, movement_ids=ids, joint_names=np.array(joint_names))
     metadata.to_csv(output / 'movements.csv', index=False)
     cuts_path = dataset_path / 'timeCuts.json'
     sources.append(dict(path='timeCuts.json', sha256=hashlib.sha256(cuts_path.read_bytes()).hexdigest()))
-    manifest = dict(schema_version=1, created_utc=datetime.now(timezone.utc).isoformat(),
+    manifest = dict(schema_version=2, created_utc=datetime.now(timezone.utc).isoformat(),
                     datasets=[dict(name='ReachGrasp', root=str(dataset_path), acquisition='vicon')],
                     joint_names=joint_names, source_channel_names=source_channel_names,
                     units='degrees', coordinates='ReachGrasp Vicon joint angles',
-                    phase_samples=samples, movement_count=len(rows), excluded_recordings=list(exclude),
+                    phase_samples=samples, trial_count=len(rows), movement_count=len(rows), excluded_recordings=list(exclude),
                     preprocessing=dict(segmentation='end_i:start_(i+1), stop exclusive; time starts at zero',
                                        interpolation='linear in normalized recorded time, endpoints included',
                                        smoothing=None, scaling=None, near_zero_clamping=False,
-                                       endpoint_baseline='h(phi) = q_start + phi * (q_goal - q_start)'),
+                                       endpoint_baseline='h(phi) = q_start + phi * (q_end - q_start)'),
                     arrays=dict(native='native.npz', phase='phase.npz'), metadata='movements.csv',
                     sources=sources, code_sha256={str(path): hashlib.sha256(path.read_bytes()).hexdigest()
                         for path in (Path(__file__), Path(preprocessing.__file__), Path(data_loading.__file__))})
