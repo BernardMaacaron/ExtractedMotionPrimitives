@@ -128,9 +128,11 @@ Both repeated targets in the paired condition and unsuccessful trials are retain
         elif np.any(np.diff(indices) != 1):
             reason = 'interrupted_by_pause_or_neutral_posture'
         a, b = (int(indices[0]), int(indices[-1]) + 1) if len(indices) else (int(start), int(start))
-        validated = bool(np.any(np.diff(data['nbTgtsValidated'][start:stop]) > 0))
-        rows.append(dict(subject=subject, action=task, target_number=target,
-                         target_type=str(data['tgtType'][start]), validated=validated,
+        validation_steps = np.flatnonzero(np.diff(data['nbTgtsValidated'][start:stop]) > 0) + start + 1
+        validated = bool(len(validation_steps))
+        rows.append(dict(subject=subject, action='reach', condition=task, target_number=target,
+                         target_type=str(data['tgtType'][start]), success=validated, validated=validated,
+                         validation_index=int(validation_steps[-1]) if validated else -1,
                          object_caught=bool(data['objCatched'][start]),
                          source_start_index=a, source_stop_index=b,
                          target_start_index=int(start), target_stop_index=int(stop),
@@ -141,6 +143,52 @@ Both repeated targets in the paired condition and unsuccessful trials are retain
     return table
 
 
+
+def movement_bounds(data, row, arm='custom', onset_fraction=0.05, onset_samples=3):
+    """Return stop-exclusive kinematic movement bounds inside one retained target trial.
+
+    Onset is the first sustained hand-speed crossing of onset_fraction * peak speed.
+    Successful trials end at the first sample of the final tgtRed run preceding the
+    recorded validation event; failed trials retain the trial end/timeout.
+    """
+    a, b = int(row['source_start_index']), int(row['source_stop_index'])
+    time = np.asarray(data['timestamp'][a:b], dtype=float)
+    position_key = {'custom': 'endEffCustPos', 'virtual': 'endEffVirtPos'}[arm]
+    position = np.asarray(data[position_key][a:b], dtype=float)
+    dt = np.diff(time)
+    speed = np.linalg.norm(np.diff(position, axis=0) / dt[:, None], axis=1)
+    peak = float(speed.max(initial=0.0))
+    threshold = onset_fraction * peak
+    onset_local = 0
+    if peak > 0 and len(speed) >= onset_samples:
+        active = speed > threshold
+        runs = np.convolve(active.astype(int), np.ones(onset_samples, dtype=int), mode='valid')
+        crossings = np.flatnonzero(runs == onset_samples)
+        if len(crossings):
+            onset_local = int(crossings[0])
+
+    stop = b
+    arrival_index = -1
+    if bool(row.get('success', row.get('validated', False))):
+        validation_index = int(row.get('validation_index', -1))
+        hi = min(b - 1, validation_index if validation_index >= 0 else b - 1)
+        red = np.asarray(data['tgtRed'][a:hi + 1], dtype=bool)
+        valid = np.flatnonzero(red)
+        if len(valid):
+            j = int(valid[-1])
+            while j > 0 and red[j - 1]:
+                j -= 1
+            arrival_index = a + j
+            stop = arrival_index + 1  # include the achieved target-entry sample
+
+    start = a + onset_local
+    onset_fallback = False
+    if stop - start < 2:
+        start = a
+        onset_fallback = True
+    return start, stop, dict(peak_hand_speed=peak, onset_speed_threshold=threshold,
+                             arrival_index=arrival_index, onset_fallback=onset_fallback)
+
 def get_repetition_count(subject, task, dataset_path=None):
     data = load_recording(subject, task, dataset_path, fields=EVENT_FIELDS)
     return int(trial_table(data, subject, task, dataset_path).retained.sum())
@@ -148,7 +196,8 @@ def get_repetition_count(subject, task, dataset_path=None):
 
 @lru_cache(maxsize=64)
 def load_arm_joint_data(subject, task, dataset_path=None, return_all_joints=True,
-                        split_repetitions=True, extract_movements=True, verbose=False, *, arm='custom'):
+                        split_repetitions=True, extract_movements=True, verbose=False, *, arm='custom',
+                        trim_movement=True, onset_fraction=0.05, onset_samples=3):
     """Return (elapsed seconds, seven-angle DataFrame, metadata) for each retained target.
 
 Repetition index is the retained trial's ordinal; target_number is the source ID.
@@ -164,13 +213,17 @@ All seven channels are arm joints, so return_all_joints does not change the outp
     table = trial_table(data, subject, task, dataset_path)
     repetitions = []
     for row in table[table.retained].to_dict('records'):
-        a, b = row['source_start_index'], row['source_stop_index']
+        if trim_movement:
+            a, b, segmentation = movement_bounds(data, row, arm, onset_fraction, onset_samples)
+        else:
+            a, b = row['source_start_index'], row['source_stop_index']
+            segmentation = {}
         part = {key: value[a:b] for key, value in data.items()}
         time = part['timestamp'] - part['timestamp'][0]
         q = np.unwrap(joint_angles(part, arm), axis=0)
         if not np.isfinite(q).all() or not np.isfinite(time).all() or np.any(np.diff(time) <= 0):
             raise ValueError(f'Invalid trajectory: {subject}/{task}/target-{row["target_number"]}.')
-        info = dict(row, repetition=len(repetitions), duration=float(time[-1]), units='radians',
+        info = dict(row, segmentation, repetition=len(repetitions), duration=float(time[-1]), units='radians',
                     n_joints=7, arm=arm, sampling_rate=float(1 / np.median(np.diff(time))),
                     dataset_path=str(data_root(dataset_path)),
                     source_file=str(data_root(dataset_path) / subject / f'{task}.json'))

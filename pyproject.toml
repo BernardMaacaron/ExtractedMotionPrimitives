@@ -7,7 +7,7 @@ name = "extracted-motion-primitives"
 version = "0.1.0"
 description = "SOC-independent motion collections and primitive extraction"
 requires-python = ">=3.10"
-dependencies = ["numpy", "scipy", "pandas", "tqdm", "matplotlib", "reachgrasp"]
+dependencies = ["numpy", "scipy", "pandas", "tqdm", "matplotlib", "scikit-learn", "reachgrasp"]
 
 [project.optional-dependencies]
 fada = ["torch"]
