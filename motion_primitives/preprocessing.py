@@ -29,11 +29,14 @@ def endpoint_decomposition(q):
 def load_collections(paths, joint_names=None, view='all'):
     """Load and combine compatible prepared collections.
 
-    view selects a named index set from views.npz. all is the default and does
-    not require a views file, preserving compatibility with older collections.
+    view='successful' filters the success column if present (as in 3D-ARM-Gaze).
+    Collections without success labels (e.g. ReachGrasp) retain all trials.
+    No views.npz file is required.
     Canonical trial IDs are returned as trial_id while movement_id is retained
     as a compatibility alias.
     """
+    if view not in (None, 'all', 'successful'):
+        raise ValueError("view must be 'all' or 'successful'.")
     targets, rows, manifests = [], [], []
 
     for path in map(Path, paths):
@@ -62,17 +65,9 @@ def load_collections(paths, joint_names=None, view='all'):
                 raise ValueError(f'Trial order differs between metadata and arrays: {path}')
             q = data['q'][..., indices]
 
-        if view not in (None, 'all'):
-            views_path = path / 'views.npz'
-            if not views_path.exists():
-                raise ValueError(f'Collection has no named views: {path}')
-            with np.load(views_path) as views:
-                if view not in views.files:
-                    raise ValueError(f'Unknown view {view!r} for {path}; available views: {views.files}')
-                selected = np.asarray(views[view], dtype=int)
-            if selected.ndim != 1 or np.any(selected < 0) or np.any(selected >= len(metadata)):
-                raise ValueError(f'Invalid indices for view {view!r}: {path}')
-            metadata = metadata.iloc[selected].reset_index(drop=True)
+        if view == 'successful' and 'success' in metadata.columns:
+            selected = metadata['success'].fillna(False).to_numpy(dtype=bool)
+            metadata = metadata.loc[selected].reset_index(drop=True)
             q = q[selected]
 
         metadata['collection'] = str(path.resolve())

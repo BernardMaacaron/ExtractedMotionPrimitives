@@ -1,4 +1,4 @@
-"""Export schema-v2 3D-ARM-Gaze trials with kinematic movement bounds and named views."""
+"""Export schema-v2 3D-ARM-Gaze trials with kinematic movement bounds."""
 import argparse
 from datetime import datetime, timezone
 import hashlib
@@ -126,7 +126,6 @@ def prepare(dataset_path, output, samples=200, arm='custom', subjects=None,
                         offsets=np.array(offsets), trial_ids=ids, movement_ids=ids, joint_names=names)
     np.savez_compressed(output / 'phase.npz', q=q, h=h, f=f, q_start=q[:, 0], q_end=q[:, -1],
                         phase=np.linspace(0, 1, samples), trial_ids=ids, movement_ids=ids, joint_names=names)
-    np.savez_compressed(output / 'views.npz', all=np.arange(len(metadata)), successful=successful)
     metadata.to_csv(output / 'movements.csv', index=False)
     pd.concat(audits, ignore_index=True).to_csv(output / 'trial_audit.csv', index=False)
     pd.DataFrame(recording_rows).to_csv(output / 'recordings.csv', index=False)
@@ -137,7 +136,6 @@ def prepare(dataset_path, output, samples=200, arm='custom', subjects=None,
         joint_names=names.tolist(), units='radians',
         coordinates=f'DBAS22 {arm} arm; reflected Unity x; relative XZY/X/YXZ angles',
         phase_samples=samples, trial_count=len(rows), movement_count=len(rows), subjects=subjects,
-        views=dict(all=len(rows), successful=int(len(successful))),
         preprocessing=dict(
             segmentation=('retained target trial; onset = first sustained hand-speed crossing; '
                           'successful stop = first sample of final tgtRed run before validation; '
@@ -155,7 +153,7 @@ def prepare(dataset_path, output, samples=200, arm='custom', subjects=None,
             eye_origins='metres, original head frame', eye_directions='unit vectors, original head frame',
             quaternions='xyzw, original Unity frame', gaze_mask='validity == 31; invalid values become NaN',
             last_sample='retained in context for indexing, excluded from trials'),
-        arrays=dict(native='native.npz', phase='phase.npz', views='views.npz'),
+        arrays=dict(native='native.npz', phase='phase.npz'),
         metadata='movements.csv', trial_audit='trial_audit.csv', recordings='recordings.csv',
         sources=sources,
         code_sha256={str(source): hashlib.sha256(source.read_bytes()).hexdigest()
