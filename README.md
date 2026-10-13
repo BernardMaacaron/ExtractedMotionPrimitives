@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Extracted Motion Primitives
 
 SOC-independent dataset loading, preprocessing, and primitive extraction live here.
@@ -159,6 +158,11 @@ Q, F = collection['q'], collection['f']
 metadata = collection['metadata']  # includes dataset and source collection for every movement
 ```
 
+`view='successful'` filters the `success` column of `movements.csv` where present
+(as in 3D-ARM-Gaze); datasets without success labels, such as ReachGrasp, retain
+all trials. `view='all'` (the default) always retains all trials. No `views.npz`
+file is required.
+
 Mixing requires explicit matching joint names, physical units, coordinate convention, phase sample
 count, and preprocessing. The loader selects/reorders requested channels and rejects incompatible
 collections and duplicate movement IDs. It does not assume that a human arm and an iCub arm share
@@ -185,7 +189,10 @@ selection and scaling are owned by gain/readout manifests. They now import the e
 Likewise, `7f_KinematicSCAControl` and `RiemannianAnalysis` remain in ARC-IIT because they include
 SOC comparisons or gain geometry. Their old results are not silently relabelled as this unscaled
 31-channel collection. New SOC-independent scientific work and results belong here.
-=======
-# ExtractedMotionPrimitives
-Personal repo to test, analyse, extract and store motion primitives of all types and generated from various datasets.
->>>>>>> 58f3102acebe50653e6b6ddabdbdb2833db3bdba
+
+The analysis notebooks `04_FADA_Analysis.ipynb` and `05_SCA_Analysis.ipynb` only
+inspect fitted artifacts: run `03_Primitive_Discovery.ipynb` for the selected
+collection and cohort first. Its saved ordered split and the fitted models must
+remain paired for valid held-out evaluation. For collections without a `success`
+column, the notebooks normalize `VIEW='successful'` to `VIEW='all'` to avoid
+two names for the same trial cohort.

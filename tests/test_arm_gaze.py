@@ -80,6 +80,10 @@ def test_arm_gaze_loading_and_preprocessing(tmp_path):
     output = module.prepare(tmp_path, tmp_path / 'collection', samples=5)
     loaded = load_collections([output])
     assert loaded['q'].shape == (2, 5, 7)
+    assert not (output / 'views.npz').exists()
+    successful = load_collections([output], view='successful')
+    assert successful['metadata'].target_number.tolist() == [1]
+    assert successful['q'].shape == (1, 5, 7)
     np.testing.assert_allclose(loaded['q'][:, [0, -1]], q[[[12, 23], [48, 59]]], atol=1e-14)
     assert loaded['metadata'].target_number.tolist() == [1, 4]
     assert loaded['metadata'].angle_wrap_events.tolist() == [0, 1]
