@@ -189,3 +189,10 @@ selection and scaling are owned by gain/readout manifests. They now import the e
 Likewise, `7f_KinematicSCAControl` and `RiemannianAnalysis` remain in ARC-IIT because they include
 SOC comparisons or gain geometry. Their old results are not silently relabelled as this unscaled
 31-channel collection. New SOC-independent scientific work and results belong here.
+
+The analysis notebooks `04_FADA_Analysis.ipynb` and `05_SCA_Analysis.ipynb` only
+inspect fitted artifacts: run `03_Primitive_Discovery.ipynb` for the selected
+collection and cohort first. Its saved ordered split and the fitted models must
+remain paired for valid held-out evaluation. For collections without a `success`
+column, the notebooks normalize `VIEW='successful'` to `VIEW='all'` to avoid
+two names for the same trial cohort.
