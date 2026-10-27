@@ -208,7 +208,7 @@ All seven channels are arm joints, so return_all_joints does not change the outp
     if not split_repetitions or not extract_movements:
         raise ValueError('Use load_recording for continuous 3D-ARM-Gaze data.')
     suffix = {'custom': 'Cust', 'virtual': 'Virt'}[arm]
-    data = load_recording(subject, task, dataset_path, fields=(*EVENT_FIELDS, 'armRootQuat',
+    data = load_recording(subject, task, dataset_path, fields=(*EVENT_FIELDS, 'armRootQuat', f'endEff{suffix}Pos',
                           *(f'{joint}{suffix}Quat' for joint in ('shou', 'elb', 'wri'))))
     table = trial_table(data, subject, task, dataset_path)
     repetitions = []
@@ -223,7 +223,7 @@ All seven channels are arm joints, so return_all_joints does not change the outp
         q = np.unwrap(joint_angles(part, arm), axis=0)
         if not np.isfinite(q).all() or not np.isfinite(time).all() or np.any(np.diff(time) <= 0):
             raise ValueError(f'Invalid trajectory: {subject}/{task}/target-{row["target_number"]}.')
-        info = dict(row, segmentation, repetition=len(repetitions), duration=float(time[-1]), units='radians',
+        info = dict(row, **segmentation, repetition=len(repetitions), duration=float(time[-1]), units='radians',
                     n_joints=7, arm=arm, sampling_rate=float(1 / np.median(np.diff(time))),
                     dataset_path=str(data_root(dataset_path)),
                     source_file=str(data_root(dataset_path) / subject / f'{task}.json'))
