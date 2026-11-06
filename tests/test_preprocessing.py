@@ -43,3 +43,45 @@ def test_mix_compatible_collections(tmp_path):
     (paths[1] / 'manifest.json').write_text(json.dumps(manifest))
     with pytest.raises(ValueError, match='Incompatible units'):
         load_collections(paths)
+
+
+def test_successful_trial_selection_from_metadata(tmp_path):
+    path = tmp_path / 'A'
+    path.mkdir()
+    manifest = dict(joint_names=['x'], units='degrees', coordinates='same-model',
+                    phase_samples=3, preprocessing={'interpolation': 'linear'})
+    (path / 'manifest.json').write_text(json.dumps(manifest))
+    metadata = pd.DataFrame([
+        dict(trial_id='A/t0', movement_id='A/t0', dataset='A', success=True),
+        dict(trial_id='A/t1', movement_id='A/t1', dataset='A', success=False),
+        dict(trial_id='A/t2', movement_id='A/t2', dataset='A', success=True),
+    ])
+    metadata.to_csv(path / 'movements.csv', index=False)
+    q = np.arange(9).reshape(3, 3, 1)
+    np.savez(path / 'phase.npz', q=q, trial_ids=metadata.trial_id.to_numpy(dtype=str))
+
+    assert len(load_collections([path], view='all')['q']) == 3
+    loaded = load_collections([path], view='successful')
+    assert loaded['metadata'].trial_id.tolist() == ['A/t0', 'A/t2']
+    np.testing.assert_array_equal(loaded['q'], q[[0, 2]])
+    np.testing.assert_array_equal(loaded['q_start'], q[[0, 2], 0])
+    np.testing.assert_array_equal(loaded['q_end'], q[[0, 2], -1])
+
+def test_successful_view_keeps_collections_without_success_flag(tmp_path):
+    path = tmp_path / 'ReachGrasp'
+    path.mkdir()
+    manifest = dict(joint_names=['x'], units='degrees', coordinates='same-model',
+                    phase_samples=3, preprocessing={'interpolation': 'linear'})
+    (path / 'manifest.json').write_text(json.dumps(manifest))
+    pd.DataFrame([dict(movement_id='ReachGrasp/a'), dict(movement_id='ReachGrasp/b')]).to_csv(
+        path / 'movements.csv', index=False)
+    q = np.arange(6).reshape(2, 3, 1)
+    np.savez(path / 'phase.npz', q=q, movement_ids=['ReachGrasp/a', 'ReachGrasp/b'])
+
+    loaded = load_collections([path], view='successful')
+    np.testing.assert_array_equal(loaded['q'], q)
+    assert loaded['metadata'].trial_id.tolist() == ['ReachGrasp/a', 'ReachGrasp/b']
+    np.testing.assert_allclose(loaded['q'], loaded['h'] + loaded['f'])
+
+    with pytest.raises(ValueError, match='view must be'):
+        load_collections([path], view='unknown')

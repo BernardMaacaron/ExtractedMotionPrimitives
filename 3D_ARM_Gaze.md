@@ -65,9 +65,9 @@ ReachGrasp Vicon coordinates; common anatomical labels alone do not make the dat
 4. Recover seven joint angles and keep native timestamps, rebased to zero per trial. Reject
    non-finite angles/times or non-increasing time. Unwrap principal-angle branch crossings within
    each trial using `numpy.unwrap` before interpolation, preserving rotations modulo 2*pi.
-   No smoothing, imputation, scaling, clamping, or velocity-based trimming is performed.
-5. Separately map time to `phi=(t-t0)/(t1-t0)` and linearly interpolate to **200 endpoint-inclusive
-   phase samples**. Compute `h(phi)=q_start+phi*(q_goal-q_start)` and `f=q-h`.
+   No smoothing, imputation, scaling, or clamping is performed. Primitive-discovery trials are trimmed to kinematic movement bounds using the configured hand-speed onset rule and target-arrival rule.
+5. Separately map movement time to `phi=(t-t0)/(t1-t0)` and linearly interpolate to **200 endpoint-inclusive
+   phase samples**. Compute `h(phi)=q_start+phi*(q_end-q_start)` and `f=q-h`.
 6. Preserve native gaze/context data. Eye validity must equal 31; invalid eye origins/directions
    become NaN. Binocular focus requires both eyes valid. No interpolation crosses invalid gaze.
 
@@ -121,7 +121,7 @@ print(info['target_number'], joints.columns.tolist())
 From the ExtractedMotionPrimitives directory, reproduce into a new collection:
 
 ```bash
-python scripts/prepare_arm_gaze.py --output collections/3D-ARM-Gaze/custom-phase200-v2
+python scripts/prepare_arm_gaze.py --output collections/3D-ARM-Gaze/custom-phase200-v1
 ```
 
 For a separate virtual-arm collection, add `--arm virtual` and choose another output path.

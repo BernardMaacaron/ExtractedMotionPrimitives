@@ -80,6 +80,10 @@ def test_arm_gaze_loading_and_preprocessing(tmp_path):
     output = module.prepare(tmp_path, tmp_path / 'collection', samples=5)
     loaded = load_collections([output])
     assert loaded['q'].shape == (2, 5, 7)
+    assert not (output / 'views.npz').exists()
+    successful = load_collections([output], view='successful')
+    assert successful['metadata'].target_number.tolist() == [1]
+    assert successful['q'].shape == (1, 5, 7)
     np.testing.assert_allclose(loaded['q'][:, [0, -1]], q[[[12, 23], [48, 59]]], atol=1e-14)
     assert loaded['metadata'].target_number.tolist() == [1, 4]
     assert loaded['metadata'].angle_wrap_events.tolist() == [0, 1]
@@ -93,3 +97,30 @@ def test_arm_gaze_loading_and_preprocessing(tmp_path):
     assert pd.read_csv(output / 'trial_audit.csv').retained.sum() == 2
     with pytest.raises(FileExistsError):
         module.prepare(tmp_path, output)
+
+
+@pytest.mark.parametrize('arm,suffix,start', [('custom', 'Cust', 2), ('virtual', 'Virt', 3)])
+def test_joint_loader_reads_hand_position_for_movement_trimming(monkeypatch, tmp_path, arm, suffix, start):
+    n = 9
+    data = dict(timestamp=np.arange(n, dtype=float), tgtRed=np.arange(n) >= 6)
+    data.update({key: np.zeros(n) for key in arm_gaze.EVENT_FIELDS if key not in data})
+    for key in ('armRootQuat', f'shou{suffix}Quat', f'elb{suffix}Quat', f'wri{suffix}Quat'):
+        data[key] = np.tile([0., 0., 0., 1.], (n, 1))
+    data[f'endEff{suffix}Pos'] = np.column_stack((np.maximum(np.arange(n) - start, 0),
+                                                np.zeros((n, 2))))
+
+    def load_recording(subject, task, dataset_path, *, fields):
+        return {key: data[key] for key in fields}
+
+    monkeypatch.setattr(arm_gaze, 'load_recording', load_recording)
+    monkeypatch.setattr(arm_gaze, 'trial_table', lambda *args: pd.DataFrame([dict(
+        retained=True, source_start_index=0, source_stop_index=n, success=True,
+        validation_index=8, target_number=0)]))
+    arm_gaze.load_arm_joint_data.cache_clear()
+    time, joints, info = arm_gaze.load_arm_joint_data('s1', arm_gaze.PHASES[0], tmp_path, arm=arm)[0]
+    np.testing.assert_array_equal(time, np.arange(7 - start))
+    assert joints.shape == (7 - start, 7)
+    assert info['peak_hand_speed'] == 1.0
+    assert info['arrival_index'] == 6
+    assert not info['onset_fallback']
+    arm_gaze.load_arm_joint_data.cache_clear()
